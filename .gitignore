@@ -1,0 +1,10 @@
+# build output
+/http3-beta
+/dist/
+
+# tls keylog (debugging)
+keylog.txt
+
+# editor / OS junk
+.DS_Store
+*.swp
