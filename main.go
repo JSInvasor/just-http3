@@ -53,12 +53,13 @@ func main() {
 	defer cancel()
 
 	res, err := sender.Do(ctx, cfg.url, sender.Options{
-		Profile:  prof,
-		Method:   cfg.method,
-		Timeout:  cfg.timeout,
-		Insecure: cfg.insecure,
-		KeepBody: cfg.showBody,
-		MaxBody:  cfg.maxBody,
+		Profile:   prof,
+		Method:    cfg.method,
+		Timeout:   cfg.timeout,
+		Insecure:  cfg.insecure,
+		UserAgent: cfg.userAgent,
+		KeepBody:  cfg.showBody,
+		MaxBody:   cfg.maxBody,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "request failed:", err)
@@ -72,6 +73,7 @@ type config struct {
 	url         string
 	profile     string
 	method      string
+	userAgent   string
 	timeout     time.Duration
 	insecure    bool
 	verbose     bool
@@ -110,6 +112,14 @@ func parseArgs(args []string) (config, error) {
 			cfg.profile = val
 		case strings.HasPrefix(a, "--profile="):
 			cfg.profile = strings.TrimPrefix(a, "--profile=")
+		case a == "-A" || a == "--user-agent":
+			val, err := next(args, &i, a)
+			if err != nil {
+				return cfg, err
+			}
+			cfg.userAgent = val
+		case strings.HasPrefix(a, "--user-agent="):
+			cfg.userAgent = strings.TrimPrefix(a, "--user-agent=")
 		case a == "-X" || a == "--method":
 			val, err := next(args, &i, a)
 			if err != nil {
@@ -259,6 +269,7 @@ USAGE
 FLAGS
   -p, --profile <name>   browser profile to impersonate (default: %s)
                          available: %s
+  -A, --user-agent <ua>  override the profile's User-Agent
   -X, --method <method>  HTTP method (default: GET)
   -t, --timeout <dur>    overall timeout, e.g. 10s, 1m (default: 30s)
   -k, --insecure         skip TLS certificate verification

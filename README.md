@@ -86,7 +86,50 @@ Profiles live in `internal/profiles/`. Each bundles:
 - the default **request headers in browser order** (header order is itself
   part of the fingerprint).
 
-Currently shipped: `chrome` (Chrome 115) and `firefox` (Firefox 116).
+| profile     | UA version | QUIC/TLS spec | notes |
+|-------------|------------|---------------|-------|
+| `chrome`    | Chrome 131 | Chrome 115    | default; modern client hints |
+| `chrome115` | Chrome 115 | Chrome 115    | exact uquic-validated baseline |
+| `firefox`   | Firefox 116| Firefox 116   | |
+
+Override the User-Agent on any profile with `-A/--user-agent`.
+
+### About "newer Chrome"
+
+The latest [`uquic`](https://github.com/refraction-networking/uquic) release
+(v0.0.6) only ships a **Chrome 115** QUIC spec. That matters more than it
+sounds: Chrome **124+** sends a post-quantum key share (Kyber768, now
+MLKEM768 — ~1.2 KB) in its TLS ClientHello, which pushes the handshake across
+**multiple QUIC Initial packets**. uquic v0.0.6 models a single-packet Initial,
+so we *cannot* just bolt the PQ key share onto the 115 spec without producing a
+malformed handshake.
+
+So the `chrome` profile uses the **proven Chrome 115 QUIC/TLS fingerprint**
+(stable JA4, reads as Chrome) with **refreshed Chrome 131 headers**. What this
+gives you and what it doesn't:
+
+- ✅ JA3/JA4 reads as Chrome; QUIC transport params + GREASE match a real Chrome.
+- ✅ User-Agent / client hints say Chrome 131 (tweak with `-A`).
+- ⚠️ The TLS key share is X25519-only — it lacks the PQ key share that the very
+  latest Chrome sends, so a detector that cross-checks UA version against the
+  key share could spot the mismatch.
+
+For a byte-exact *latest* Chrome H3 fingerprint we need either a newer uquic
+that models the multi-packet PQ Initial, or a hand-built spec from a real
+capture (see below). That is the planned next step.
+
+## Browser vs. this tool
+
+Yes — if you only want to **see** your own fingerprint, the browser itself is
+the most authentic source: force H3 (below), open `https://tls.peet.ws/api/all`
+and the page shows everything the server observed about your real client.
+
+But the browser can only send the requests *you* navigate to, through its own
+UI. It can't be scripted to hit arbitrary endpoints, can't run headless on a
+server, and won't give you a phase-by-phase timing breakdown. That's what
+`http3-beta` is for: sending custom H3 requests, from code/automation, with a
+*chosen* fingerprint — and measuring them. Use the browser to capture a
+reference; use this tool to reproduce it programmatically.
 
 ## Collecting a real browser's H3 fingerprint
 

@@ -49,10 +49,48 @@ func (p Profile) Spec() (quic.QUICSpec, error) {
 	return quic.QUICID2Spec(p.quicID)
 }
 
-// chrome115 mimics a desktop Chrome 115 on Windows.
-var chrome115 = Profile{
+// chromeUA / chromeMajor define the modern Chrome version we present.
+//
+// IMPORTANT: the underlying QUIC + TLS fingerprint comes from uquic's
+// validated Chrome 115 spec (the latest uquic ships). That spec is still
+// structurally "Chrome" and yields a stable JA4, but it does NOT carry the
+// post-quantum key share (Kyber768 / MLKEM768) that Chrome 124+ sends —
+// uquic v0.0.6 cannot model the resulting multi-packet Initial. So we keep
+// the proven spec and only refresh the version-revealing headers. See README.
+const (
+	chromeMajor = "131"
+	chromeUA    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+// chrome is the default profile: a current Chrome on Windows. The QUIC/TLS
+// layer is the Chrome 115 spec (see note above) with refreshed client hints.
+var chrome = Profile{
 	Name:      "chrome",
-	Label:     "Chrome 115 (h3)",
+	Label:     "Chrome " + chromeMajor + " (h3)",
+	quicID:    quic.QUICChrome_115,
+	ALPN:      []string{"h3"},
+	UserAgent: chromeUA,
+	Headers: []Header{
+		{"sec-ch-ua", `"Google Chrome";v="` + chromeMajor + `", "Chromium";v="` + chromeMajor + `", "Not_A Brand";v="24"`},
+		{"sec-ch-ua-mobile", "?0"},
+		{"sec-ch-ua-platform", `"Windows"`},
+		{"upgrade-insecure-requests", "1"},
+		{"user-agent", chromeUA},
+		{"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
+		{"sec-fetch-site", "none"},
+		{"sec-fetch-mode", "navigate"},
+		{"sec-fetch-user", "?1"},
+		{"sec-fetch-dest", "document"},
+		{"accept-encoding", "gzip, deflate, br"},
+		{"accept-language", "en-US,en;q=0.9"},
+	},
+}
+
+// chrome115 keeps the exact Chrome 115 presentation for users who want the
+// version string to match uquic's validated fingerprint baseline.
+var chrome115 = Profile{
+	Name:      "chrome115",
+	Label:     "Chrome 115 (h3, baseline)",
 	quicID:    quic.QUICChrome_115,
 	ALPN:      []string{"h3"},
 	UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
@@ -95,6 +133,7 @@ var firefox116 = Profile{
 
 // registry maps profile names to their definitions.
 var registry = map[string]Profile{
+	chrome.Name:     chrome,
 	chrome115.Name:  chrome115,
 	firefox116.Name: firefox116,
 }
@@ -108,7 +147,7 @@ func Get(name string) (Profile, bool) {
 	return p, ok
 }
 
-// Names returns the available profile names.
+// Names returns the available profile names in display order.
 func Names() []string {
-	return []string{chrome115.Name, firefox116.Name}
+	return []string{chrome.Name, chrome115.Name, firefox116.Name}
 }

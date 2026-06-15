@@ -49,14 +49,15 @@ type Result struct {
 
 // Options configures a request.
 type Options struct {
-	Profile        profiles.Profile
-	Method         string
-	Timeout        time.Duration
-	Insecure       bool // skip TLS certificate verification
-	ServerName     string
-	ExtraHeaders   []profiles.Header
-	KeepBody       bool          // retain the response body in Result.Body
-	MaxBody        int64         // cap on body bytes read (0 = unlimited)
+	Profile      profiles.Profile
+	Method       string
+	Timeout      time.Duration
+	Insecure     bool // skip TLS certificate verification
+	ServerName   string
+	UserAgent    string // overrides the profile's User-Agent when set
+	ExtraHeaders []profiles.Header
+	KeepBody     bool  // retain the response body in Result.Body
+	MaxBody      int64 // cap on body bytes read (0 = unlimited)
 }
 
 // Do performs the HTTP/3 request described by rawURL and opts.
@@ -156,6 +157,9 @@ func Do(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 	}
 	applyHeaders(req, opts.Profile.Headers)
 	applyHeaders(req, opts.ExtraHeaders)
+	if opts.UserAgent != "" {
+		req.Header.Set("user-agent", opts.UserAgent)
+	}
 
 	// --- request + TTFB ----------------------------------------------------
 	reqStart := time.Now()
