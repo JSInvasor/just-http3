@@ -34,19 +34,25 @@ func runBench(cfg config, prof profiles.Profile) {
 		Method:   cfg.method,
 		Timeout:  cfg.timeout,
 		Insecure: cfg.insecure,
-		ProxyURL: cfg.proxyURL,
 	}
 
 	// Create one persistent connection per worker. Each connection performs
 	// exactly one QUIC handshake and then reuses it for all requests.
+	// Proxies are distributed round-robin across connections.
 	conns := make([]*sender.Conn, cfg.concurrency)
 	dialCtx, dialCancel := context.WithTimeout(ctx, cfg.timeout)
 	defer dialCancel()
 
-	fmt.Fprintf(os.Stderr, "  dialing %d connections...\n", cfg.concurrency)
+	if len(cfg.proxies) > 0 {
+		fmt.Fprintf(os.Stderr, "  dialing %d connections via %d proxies...\n", cfg.concurrency, len(cfg.proxies))
+	} else {
+		fmt.Fprintf(os.Stderr, "  dialing %d connections...\n", cfg.concurrency)
+	}
 	var dialErr error
 	for i := range conns {
-		conns[i], dialErr = sender.Dial(cfg.url, opts)
+		connOpts := opts
+		connOpts.ProxyURL = cfg.proxyFor(i)
+		conns[i], dialErr = sender.Dial(cfg.url, connOpts)
 		if dialErr != nil {
 			fmt.Fprintf(os.Stderr, "error: dial failed: %v\n", dialErr)
 			os.Exit(1)

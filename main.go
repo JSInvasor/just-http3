@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net/url"
@@ -66,7 +67,7 @@ func main() {
 		UserAgent: cfg.userAgent,
 		KeepBody:  cfg.showBody,
 		MaxBody:   cfg.maxBody,
-		ProxyURL:  cfg.proxyURL,
+		ProxyURL:  cfg.proxyFor(0),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "request failed:", err)
@@ -88,9 +89,18 @@ type config struct {
 	maxBody       int64
 	concurrency   int
 	benchDuration time.Duration
-	proxyURL      *url.URL
+	proxies       []*url.URL
 	showHelp      bool
 	showVersion   bool
+}
+
+// proxyFor returns the proxy to use for connection slot i (round-robin).
+// Returns nil if no proxies are configured (direct connection).
+func (c *config) proxyFor(i int) *url.URL {
+	if len(c.proxies) == 0 {
+		return nil
+	}
+	return c.proxies[i%len(c.proxies)]
 }
 
 func parseArgs(args []string) (config, error) {
@@ -151,11 +161,11 @@ func parseArgs(args []string) (config, error) {
 			if err != nil {
 				return cfg, err
 			}
-			u, err := url.Parse(val)
-			if err != nil || u.Scheme != "socks5" {
-				return cfg, fmt.Errorf("invalid proxy %q: must be socks5://[user:pass@]host:port", val)
+			proxies, err := parseProxies(val)
+			if err != nil {
+				return cfg, err
 			}
-			cfg.proxyURL = u
+			cfg.proxies = proxies
 		case strings.HasPrefix(a, "-"):
 			return cfg, fmt.Errorf("unknown flag %q", a)
 		default:
@@ -195,6 +205,46 @@ func parseArgs(args []string) (config, error) {
 	return cfg, nil
 }
 
+// parseProxies accepts either a single socks5:// URL or a path to a .txt file
+// containing one socks5:// URL per line (blank lines and # comments ignored).
+func parseProxies(val string) ([]*url.URL, error) {
+	if strings.Contains(val, "://") {
+		u, err := url.Parse(val)
+		if err != nil || u.Scheme != "socks5" {
+			return nil, fmt.Errorf("invalid proxy %q: must be socks5://[user:pass@]host:port", val)
+		}
+		return []*url.URL{u}, nil
+	}
+
+	// Treat as file path.
+	f, err := os.Open(val)
+	if err != nil {
+		return nil, fmt.Errorf("open proxy file %q: %w", val, err)
+	}
+	defer f.Close()
+
+	var out []*url.URL
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		u, err := url.Parse(line)
+		if err != nil || u.Scheme != "socks5" {
+			return nil, fmt.Errorf("proxy file %q: invalid line %q: must be socks5://[user:pass@]host:port", val, line)
+		}
+		out = append(out, u)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read proxy file %q: %w", val, err)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("proxy file %q is empty", val)
+	}
+	return out, nil
+}
+
 func next(args []string, i *int, flag string) (string, error) {
 	if *i+1 >= len(args) {
 		return "", fmt.Errorf("flag %s needs a value", flag)
@@ -221,6 +271,9 @@ func printResult(res *sender.Result, cfg config) {
 	if res.TLSVersion != 0 {
 		fmt.Printf("  %s  %s / %s\n", dim("tls     "),
 			sender.TLSVersionName(res.TLSVersion), sender.CipherName(res.CipherID))
+	}
+	if p := cfg.proxyFor(0); p != nil {
+		fmt.Printf("  %s  %s\n", dim("proxy   "), p.Host)
 	}
 	fmt.Println()
 
@@ -320,15 +373,16 @@ FLAGS
   -k, --insecure         skip TLS certificate verification
   -v, --verbose          print response headers
   -b, --body             print response body
-  -x, --proxy <url>      SOCKS5 proxy (socks5://[user:pass@]host:port)
+  -x, --proxy <val>      SOCKS5 proxy — either:
+                           socks5://[user:pass@]host:port  (single proxy)
+                           proxies.txt                     (file, one proxy per line)
       --version          print version
   -h, --help             show this help
 
 EXAMPLES
-  http3-beta https://example.com                        # single request
-  http3-beta https://example.com 30s 50                 # 30 seconds, 50 threads
-  http3-beta https://example.com 0 100                  # unlimited, 100 threads
-  http3-beta -p safari https://example.com 1m 20        # macOS Safari profile
-  http3-beta -k https://example.com 10s 10              # skip TLS verify
+  http3-beta https://example.com
+  http3-beta https://example.com 30s 50
+  http3-beta -x socks5://user:pass@1.2.3.4:1080 https://example.com
+  http3-beta -x proxies.txt https://example.com 30s 100
 `, version, profiles.Default, strings.Join(profiles.Names(), ", "))
 }
