@@ -8,9 +8,8 @@
 //     drives the JA3/JA4 hash reported by sites like tls.peet.ws)
 //   - the default request header set, in the order a browser sends them
 //
-// We deliberately reuse the QUIC specs that ship with uquic instead of
-// hand-rolling them, because matching a browser byte-for-byte is exactly what
-// that library was built for.
+// Safari profiles are built from a real iPhone capture via browserleaks.com
+// (iOS 18.7 / Safari 18.7.5, June 2026).
 package profiles
 
 import (
@@ -28,17 +27,13 @@ type Header struct {
 
 // Profile is a named browser impersonation preset.
 type Profile struct {
-	// Name is the user-facing identifier (e.g. "chrome").
+	// Name is the user-facing identifier (e.g. "ios").
 	Name string
-	// Label is a human description shown in output (e.g. "Chrome 115").
+	// Label is a human description shown in output (e.g. "Safari 18.7 iOS").
 	Label string
-	// quicID selects the uquic fingerprint spec. Ignored when rawSpec is set.
-	quicID quic.QUICID
-	// rawSpec holds a hand-built QUIC spec for browsers not covered by uquic's
-	// built-in ID table (e.g. Safari). When non-nil it takes precedence over quicID.
+	// rawSpec holds the QUIC spec for this profile.
 	rawSpec *quic.QUICSpec
-	// ALPN is the negotiated application protocol list. For HTTP/3 this is
-	// always just "h3", but kept explicit so it shows up in the spec.
+	// ALPN is the negotiated application protocol list.
 	ALPN []string
 	// UserAgent is the User-Agent header value the browser would send.
 	UserAgent string
@@ -48,110 +43,26 @@ type Profile struct {
 	Headers []Header
 }
 
-// Spec resolves the uquic QUIC spec for this profile.
+// Spec returns the QUIC spec for this profile.
 func (p Profile) Spec() (quic.QUICSpec, error) {
-	if p.rawSpec != nil {
-		return *p.rawSpec, nil
-	}
-	return quic.QUICID2Spec(p.quicID)
+	return *p.rawSpec, nil
 }
 
-// chromeUA / chromeMajor define the modern Chrome version we present in headers.
+// safariQUICSpec is built from a real iPhone iOS 18.7 capture via browserleaks.com.
 //
-// IMPORTANT: the underlying QUIC + TLS fingerprint comes from uquic's
-// validated Chrome 115 spec (the latest uquic ships). That spec is still
-// structurally "Chrome" and yields a stable JA4, but it does NOT carry the
-// post-quantum key share (Kyber768 / MLKEM768) that Chrome 124+ sends —
-// uquic v0.0.6 cannot model the resulting multi-packet Initial. So we keep
-// the proven spec and only refresh the version-revealing headers. See README.
-const (
-	chromeMajor = "137"
-	chromeUA    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
-)
-
-// chrome is the default profile: latest Chrome on Windows. The QUIC/TLS
-// layer is the Chrome 115 spec (see note above) with refreshed client hints.
-var chrome = Profile{
-	Name:      "chrome",
-	Label:     "Chrome " + chromeMajor + " (h3)",
-	quicID:    quic.QUICChrome_115,
-	ALPN:      []string{"h3"},
-	UserAgent: chromeUA,
-	Headers: []Header{
-		{"sec-ch-ua", `"Google Chrome";v="` + chromeMajor + `", "Chromium";v="` + chromeMajor + `", "Not A Brand";v="24"`},
-		{"sec-ch-ua-mobile", "?0"},
-		{"sec-ch-ua-platform", `"Windows"`},
-		{"upgrade-insecure-requests", "1"},
-		{"user-agent", chromeUA},
-		{"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
-		{"sec-fetch-site", "none"},
-		{"sec-fetch-mode", "navigate"},
-		{"sec-fetch-user", "?1"},
-		{"sec-fetch-dest", "document"},
-		{"accept-encoding", "gzip, deflate, br, zstd"},
-		{"accept-language", "en-US,en;q=0.9"},
-		{"priority", "u=0, i"},
-	},
-}
-
-// chrome115 keeps the exact Chrome 115 presentation for users who want the
-// version string to match uquic's validated fingerprint baseline.
-var chrome115 = Profile{
-	Name:      "chrome115",
-	Label:     "Chrome 115 (h3, baseline)",
-	quicID:    quic.QUICChrome_115,
-	ALPN:      []string{"h3"},
-	UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-	Headers: []Header{
-		{"sec-ch-ua", `"Not/A)Brand";v="99", "Google Chrome";v="115", "Chromium";v="115"`},
-		{"sec-ch-ua-mobile", "?0"},
-		{"sec-ch-ua-platform", `"Windows"`},
-		{"upgrade-insecure-requests", "1"},
-		{"user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"},
-		{"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
-		{"sec-fetch-site", "none"},
-		{"sec-fetch-mode", "navigate"},
-		{"sec-fetch-user", "?1"},
-		{"sec-fetch-dest", "document"},
-		{"accept-encoding", "gzip, deflate, br"},
-		{"accept-language", "en-US,en;q=0.9"},
-	},
-}
-
-// firefox136 mimics a desktop Firefox 136 on Windows.
-// The QUIC/TLS layer uses uquic's Firefox 116 spec (the only Firefox spec in
-// uquic v0.0.6), with updated headers to reflect Firefox 136.
-var firefox116 = Profile{
-	Name:      "firefox",
-	Label:     "Firefox 136 (h3)",
-	quicID:    quic.QUICFirefox_116,
-	ALPN:      []string{"h3"},
-	UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0",
-	Headers: []Header{
-		{"user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"},
-		{"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/jxl,*/*;q=0.8"},
-		{"accept-language", "en-US,en;q=0.5"},
-		{"accept-encoding", "gzip, deflate, br, zstd"},
-		{"upgrade-insecure-requests", "1"},
-		{"sec-fetch-dest", "document"},
-		{"sec-fetch-mode", "navigate"},
-		{"sec-fetch-site", "none"},
-		{"sec-fetch-user", "?1"},
-		{"priority", "u=0, i"},
-		{"te", "trailers"},
-	},
-}
-
-// safariQUICSpec is a hand-built QUIC + TLS fingerprint for WebKit (Safari 17).
-// uquic v0.0.6 does not ship a Safari spec so we construct it from public
-// captures (tls.peet.ws / browserleaks.com).
-//
-// Distinctive Safari characteristics vs Chrome/Firefox:
-//   - ec_point_formats extension (Safari sends this even in TLS 1.3)
-//   - signed_certificate_timestamp (SCT) request
+// Key Safari/WebKit fingerprint characteristics (verified against live capture):
+//   - GREASE cipher suite prefix + GREASE extensions at position 0 and last
+//   - NO ec_point_formats, NO ALPS/ApplicationSettings
+//   - Extension order: GREASE, SNI, supported_groups, ALPN, status_request,
+//     signature_algorithms, SCT, key_share, PSK modes, supported_versions,
+//     quic_transport_parameters, compress_certificate, GREASE
 //   - compress_certificate: zlib only (Chrome uses brotli)
-//   - max_idle_timeout: 600 000 ms (10 min) — Chrome uses 30 s
-//   - No Google-specific QUIC transport params (no google_quic_version etc.)
+//   - QUIC transport params in fixed order (no shuffling)
+//   - Apple vendor transport param: 0xFF080808 = 6
+//   - active_connection_id_limit: 64 (Chrome uses 2, Firefox 8)
+//   - initial_max_data: 16 MB; stream data limits: 2 MB each
+//   - initial_max_streams_uni: 8 (not 100)
+//   - No max_idle_timeout, max_ack_delay, disable_active_migration
 var safariQUICSpec = quic.QUICSpec{
 	InitialPacketSpec: quic.InitialPacketSpec{
 		SrcConnIDLength:        0,
@@ -165,18 +76,18 @@ var safariQUICSpec = quic.QUICSpec{
 		TLSVersMin: tls.VersionTLS13,
 		TLSVersMax: tls.VersionTLS13,
 		CipherSuites: []uint16{
+			tls.GREASE_PLACEHOLDER,
 			tls.TLS_AES_128_GCM_SHA256,
 			tls.TLS_AES_256_GCM_SHA384,
 			tls.TLS_CHACHA20_POLY1305_SHA256,
 		},
 		CompressionMethods: []uint8{0x00},
 		Extensions: []tls.TLSExtension{
+			&tls.UtlsGREASEExtension{},
 			&tls.SNIExtension{},
-			&tls.SupportedPointsExtension{
-				SupportedPoints: []uint8{0x00},
-			},
 			&tls.SupportedCurvesExtension{
 				Curves: []tls.CurveID{
+					tls.CurveID(tls.GREASE_PLACEHOLDER),
 					tls.CurveX25519,
 					tls.CurveSECP256R1,
 					tls.CurveSECP384R1,
@@ -193,9 +104,8 @@ var safariQUICSpec = quic.QUICSpec{
 					tls.PSSWithSHA256,
 					tls.PKCS1WithSHA256,
 					tls.ECDSAWithP384AndSHA384,
-					tls.ECDSAWithSHA1,
 					tls.PSSWithSHA384,
-					tls.PSSWithSHA384,
+					tls.PSSWithSHA384, // Safari sends this twice (verified in capture)
 					tls.PKCS1WithSHA384,
 					tls.PSSWithSHA512,
 					tls.PKCS1WithSHA512,
@@ -205,6 +115,7 @@ var safariQUICSpec = quic.QUICSpec{
 			&tls.SCTExtension{},
 			&tls.KeyShareExtension{
 				KeyShares: []tls.KeyShare{
+					{Group: tls.CurveID(tls.GREASE_PLACEHOLDER), Data: []byte{0}},
 					{Group: tls.CurveX25519},
 				},
 			},
@@ -212,90 +123,98 @@ var safariQUICSpec = quic.QUICSpec{
 				Modes: []uint8{tls.PskModeDHE},
 			},
 			&tls.SupportedVersionsExtension{
-				Versions: []uint16{tls.VersionTLS13},
+				Versions: []uint16{
+					tls.GREASE_PLACEHOLDER,
+					tls.VersionTLS13,
+				},
+			},
+			// quic_transport_parameters comes BEFORE compress_certificate in Safari
+			// (opposite of what one might expect — verified in capture)
+			&tls.QUICTransportParametersExtension{
+				TransportParameters: tls.TransportParameters{
+					tls.InitialMaxData(16777216),
+					tls.InitialMaxStreamDataBidiLocal(2097152),
+					tls.InitialMaxStreamDataBidiRemote(2097152),
+					tls.InitialMaxStreamDataUni(2097152),
+					tls.InitialMaxStreamsUni(8),
+					tls.ActiveConnectionIDLimit(64),
+					tls.InitialSourceConnectionID([]byte{}),
+					// Apple vendor-specific transport parameter (0xFF080808 = 6)
+					&tls.FakeQUICTransportParameter{
+						Id:  0xFF080808,
+						Val: []byte{0x06},
+					},
+				},
 			},
 			&tls.UtlsCompressCertExtension{
 				Algorithms: []tls.CertCompressionAlgo{tls.CertCompressionZlib},
 			},
-			&tls.ApplicationSettingsExtension{
-				SupportedProtocols: []string{"h3"},
-			},
-			quic.ShuffleQUICTransportParameters(&tls.QUICTransportParametersExtension{
-				TransportParameters: tls.TransportParameters{
-					tls.InitialMaxData(10485760),
-					tls.InitialMaxStreamDataBidiLocal(1048576),
-					tls.InitialMaxStreamDataBidiRemote(1048576),
-					tls.InitialMaxStreamDataUni(1048576),
-					tls.InitialMaxStreamsBidi(100),
-					tls.InitialMaxStreamsUni(100),
-					tls.MaxIdleTimeout(600000),
-					tls.InitialSourceConnectionID([]byte{}),
-					tls.MaxAckDelay(25),
-					tls.ActiveConnectionIDLimit(4),
-					&tls.DisableActiveMigration{},
-					&tls.VersionInformation{
-						ChoosenVersion: tls.VERSION_1,
-						AvailableVersions: []uint32{
-							tls.VERSION_GREASE,
-							tls.VERSION_1,
-						},
-						LegacyID: false,
-					},
-				},
-			}),
-			&tls.UtlsPaddingExtension{
-				GetPaddingLen: tls.BoringPaddingStyle,
-			},
+			&tls.UtlsGREASEExtension{},
 		},
 	},
+	// Pad to 1200 bytes (QUIC RFC 9000 minimum Initial packet size).
+	UDPDatagramMinSize: 1200,
 }
 
 const (
-	safariVersion = "18.3"
-	safariWebKit  = "605.1.15"
+	// iosUA is the real UA string observed in the browserleaks.com capture.
+	iosUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7.5 Mobile/15E148 Safari/604.1"
+
+	// macUA mirrors the same WebKit version on macOS Sequoia.
+	macUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7.5 Safari/605.1.15"
 )
 
-// safari18 impersonates macOS Safari 18 on macOS Sequoia (WebKit).
-var safari17 = Profile{
-	Name:      "safari",
-	Label:     "Safari " + safariVersion + " (h3, macOS)",
+// ios is the primary profile: iPhone iOS 18.7 / Mobile Safari 18.7.5.
+// Header order and values are adapted from the browserleaks.com capture;
+// sec-fetch-* values are for a direct navigation request (not XHR/fetch).
+var ios = Profile{
+	Name:      "ios",
+	Label:     "Safari 18.7 (h3, iOS 18.7)",
 	rawSpec:   &safariQUICSpec,
 	ALPN:      []string{"h3"},
-	UserAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_3) AppleWebKit/" + safariWebKit + " (KHTML, like Gecko) Version/" + safariVersion + " Safari/" + safariWebKit,
+	UserAgent: iosUA,
 	Headers: []Header{
-		{"user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_3) AppleWebKit/" + safariWebKit + " (KHTML, like Gecko) Version/" + safariVersion + " Safari/" + safariWebKit},
+		{"sec-fetch-dest", "document"},
+		{"user-agent", iosUA},
 		{"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+		{"sec-fetch-site", "none"},
+		{"sec-fetch-mode", "navigate"},
+		{"sec-fetch-user", "?1"},
 		{"accept-language", "en-US,en;q=0.9"},
+		{"priority", "u=0, i"},
 		{"accept-encoding", "gzip, deflate, br"},
 	},
 }
 
-// ios18 impersonates Mobile Safari 18 on iPhone (iOS 18).
-var ios17 = Profile{
-	Name:      "ios",
-	Label:     "Safari 18 (h3, iOS 18)",
+// safari mirrors the iOS profile for macOS Safari 18.7 (same WebKit engine,
+// same QUIC fingerprint, different UA and platform string).
+var safari = Profile{
+	Name:      "safari",
+	Label:     "Safari 18.7 (h3, macOS 15)",
 	rawSpec:   &safariQUICSpec,
 	ALPN:      []string{"h3"},
-	UserAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/" + safariWebKit + " (KHTML, like Gecko) Version/" + safariVersion + " Mobile/15E148 Safari/604.1",
+	UserAgent: macUA,
 	Headers: []Header{
-		{"user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/" + safariWebKit + " (KHTML, like Gecko) Version/" + safariVersion + " Mobile/15E148 Safari/604.1"},
+		{"sec-fetch-dest", "document"},
+		{"user-agent", macUA},
 		{"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+		{"sec-fetch-site", "none"},
+		{"sec-fetch-mode", "navigate"},
+		{"sec-fetch-user", "?1"},
 		{"accept-language", "en-US,en;q=0.9"},
+		{"priority", "u=0, i"},
 		{"accept-encoding", "gzip, deflate, br"},
 	},
 }
 
 // registry maps profile names to their definitions.
 var registry = map[string]Profile{
-	chrome.Name:     chrome,
-	chrome115.Name:  chrome115,
-	firefox116.Name: firefox116,
-	safari17.Name:   safari17,
-	ios17.Name:      ios17,
+	ios.Name:    ios,
+	safari.Name: safari,
 }
 
 // Default is the profile used when none is specified.
-const Default = "chrome"
+const Default = "ios"
 
 // Get returns the profile with the given name, or false if it is unknown.
 func Get(name string) (Profile, bool) {
@@ -305,5 +224,5 @@ func Get(name string) (Profile, bool) {
 
 // Names returns the available profile names in display order.
 func Names() []string {
-	return []string{chrome.Name, chrome115.Name, firefox116.Name, safari17.Name, ios17.Name}
+	return []string{ios.Name, safari.Name}
 }
