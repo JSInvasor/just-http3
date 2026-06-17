@@ -34,6 +34,7 @@ func runBench(cfg config, prof profiles.Profile) {
 		Method:   cfg.method,
 		Timeout:  cfg.timeout,
 		Insecure: cfg.insecure,
+		ProxyURL: cfg.proxyURL,
 	}
 
 	// Create one persistent connection per worker. Each connection performs

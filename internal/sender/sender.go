@@ -61,6 +61,7 @@ type Options struct {
 	ExtraHeaders []profiles.Header
 	KeepBody     bool  // retain the response body in Result.Body
 	MaxBody      int64 // cap on body bytes read (0 = unlimited)
+	ProxyURL     *url.URL // socks5://[user:pass@]host:port; nil = direct
 }
 
 // Do performs the HTTP/3 request described by rawURL and opts.
@@ -110,12 +111,21 @@ func Do(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 
 	// We build the UDP socket and UTransport ourselves so the dial — and
 	// therefore the handshake — can be timed precisely via a wrapper.
-	udpConn, err := net.ListenUDP("udp", nil)
-	if err != nil {
-		return nil, fmt.Errorf("opening udp socket: %w", err)
+	var pc net.PacketConn
+	if opts.ProxyURL != nil {
+		pc, err = dialSOCKS5UDP(opts.ProxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("socks5 proxy: %w", err)
+		}
+	} else {
+		pc, err = net.ListenUDP("udp", nil)
+		if err != nil {
+			return nil, fmt.Errorf("opening udp socket: %w", err)
+		}
 	}
+	defer pc.Close()
 	uTransport := &quic.UTransport{
-		Transport: &quic.Transport{Conn: udpConn},
+		Transport: &quic.Transport{Conn: pc},
 		QUICSpec:  &spec,
 	}
 
@@ -229,10 +239,10 @@ type Conn struct {
 		RoundTrip(*http.Request) (*http.Response, error)
 		Close() error
 	}
-	udpConn *net.UDPConn
-	opts    Options
-	rawURL  string
-	method  string
+	pc     net.PacketConn // underlying UDP or SOCKS5 socket
+	opts   Options
+	rawURL string
+	method string
 }
 
 // Dial creates a Conn ready to send requests to rawURL. The QUIC transport
@@ -262,13 +272,21 @@ func Dial(rawURL string, opts Options) (*Conn, error) {
 		InsecureSkipVerify: opts.Insecure,
 	}
 
-	udpConn, err := net.ListenUDP("udp", nil)
-	if err != nil {
-		return nil, fmt.Errorf("opening udp socket: %w", err)
+	var pc net.PacketConn
+	if opts.ProxyURL != nil {
+		pc, err = dialSOCKS5UDP(opts.ProxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("socks5 proxy: %w", err)
+		}
+	} else {
+		pc, err = net.ListenUDP("udp", nil)
+		if err != nil {
+			return nil, fmt.Errorf("opening udp socket: %w", err)
+		}
 	}
 
 	uTransport := &quic.UTransport{
-		Transport: &quic.Transport{Conn: udpConn},
+		Transport: &quic.Transport{Conn: pc},
 		QUICSpec:  &spec,
 	}
 
@@ -302,11 +320,11 @@ func Dial(rawURL string, opts Options) (*Conn, error) {
 	}
 
 	return &Conn{
-		rt:      uRT,
-		udpConn: udpConn,
-		opts:    opts,
-		rawURL:  rawURL,
-		method:  method,
+		rt:     uRT,
+		pc:     pc,
+		opts:   opts,
+		rawURL: rawURL,
+		method: method,
 	}, nil
 }
 
@@ -352,10 +370,10 @@ func (c *Conn) Do(ctx context.Context) (*Result, error) {
 	}, nil
 }
 
-// Close shuts down the connection and releases the UDP socket.
+// Close shuts down the connection and releases the underlying socket.
 func (c *Conn) Close() {
 	c.rt.Close()
-	c.udpConn.Close()
+	c.pc.Close()
 }
 
 func applyHeaders(req *http.Request, hs []profiles.Header) {

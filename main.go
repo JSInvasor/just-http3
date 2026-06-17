@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -65,6 +66,7 @@ func main() {
 		UserAgent: cfg.userAgent,
 		KeepBody:  cfg.showBody,
 		MaxBody:   cfg.maxBody,
+		ProxyURL:  cfg.proxyURL,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "request failed:", err)
@@ -75,19 +77,20 @@ func main() {
 }
 
 type config struct {
-	url          string
-	profile      string
-	method       string
-	userAgent    string
-	timeout      time.Duration
-	insecure     bool
-	verbose      bool
-	showBody     bool
-	maxBody      int64
-	concurrency  int
+	url           string
+	profile       string
+	method        string
+	userAgent     string
+	timeout       time.Duration
+	insecure      bool
+	verbose       bool
+	showBody      bool
+	maxBody       int64
+	concurrency   int
 	benchDuration time.Duration
-	showHelp     bool
-	showVersion  bool
+	proxyURL      *url.URL
+	showHelp      bool
+	showVersion   bool
 }
 
 func parseArgs(args []string) (config, error) {
@@ -143,6 +146,16 @@ func parseArgs(args []string) (config, error) {
 				return cfg, fmt.Errorf("invalid timeout %q: %w", val, err)
 			}
 			cfg.timeout = d
+		case a == "-x" || a == "--proxy":
+			val, err := next(args, &i, a)
+			if err != nil {
+				return cfg, err
+			}
+			u, err := url.Parse(val)
+			if err != nil || u.Scheme != "socks5" {
+				return cfg, fmt.Errorf("invalid proxy %q: must be socks5://[user:pass@]host:port", val)
+			}
+			cfg.proxyURL = u
 		case strings.HasPrefix(a, "-"):
 			return cfg, fmt.Errorf("unknown flag %q", a)
 		default:
@@ -307,6 +320,7 @@ FLAGS
   -k, --insecure         skip TLS certificate verification
   -v, --verbose          print response headers
   -b, --body             print response body
+  -x, --proxy <url>      SOCKS5 proxy (socks5://[user:pass@]host:port)
       --version          print version
   -h, --help             show this help
 
