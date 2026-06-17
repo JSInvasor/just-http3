@@ -29,16 +29,38 @@ func runBench(cfg config, prof profiles.Profile) {
 	}
 	defer cancel()
 
-	// Feeder sends work until context is cancelled, then closes the channel.
-	work := make(chan struct{}, cfg.concurrency)
-	go func() {
-		defer close(work)
-		for {
-			select {
-			case work <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
+	opts := sender.Options{
+		Profile:  prof,
+		Method:   cfg.method,
+		Timeout:  cfg.timeout,
+		Insecure: cfg.insecure,
+	}
+
+	// Create one persistent connection per worker. Each connection performs
+	// exactly one QUIC handshake and then reuses it for all requests.
+	conns := make([]*sender.Conn, cfg.concurrency)
+	dialCtx, dialCancel := context.WithTimeout(ctx, cfg.timeout)
+	defer dialCancel()
+
+	fmt.Fprintf(os.Stderr, "  dialing %d connections...\n", cfg.concurrency)
+	var dialErr error
+	for i := range conns {
+		conns[i], dialErr = sender.Dial(cfg.url, opts)
+		if dialErr != nil {
+			fmt.Fprintf(os.Stderr, "error: dial failed: %v\n", dialErr)
+			os.Exit(1)
+		}
+		// Warm up: send one request to complete the handshake now so bench
+		// start times are not skewed by concurrent handshake latency.
+		warmCtx, warmCancel := context.WithTimeout(dialCtx, cfg.timeout)
+		_, _ = conns[i].Do(warmCtx)
+		warmCancel()
+	}
+	fmt.Fprintf(os.Stderr, "  ready\n\n")
+
+	defer func() {
+		for _, c := range conns {
+			c.Close()
 		}
 	}()
 
@@ -51,7 +73,7 @@ func runBench(cfg config, prof profiles.Profile) {
 
 	start := time.Now()
 
-	// Live stats line, rewritten in place every second.
+	// Live stats line updated every second.
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -63,16 +85,16 @@ func runBench(cfg config, prof profiles.Profile) {
 			case <-ticker.C:
 				cur := totalReqs.Load()
 				elapsed := time.Since(start)
-				rps := float64(cur-prev)
+				rps := float64(cur - prev)
 				prev = cur
 
 				var line string
 				if cfg.benchDuration > 0 {
-					line = fmt.Sprintf("\r  [%s / %s]   req: %-7d   err: %-5d   rps: %-6.0f",
+					line = fmt.Sprintf("\r  [%s / %s]   req: %-8d   err: %-6d   rps: %-7.0f",
 						fmtElapsed(elapsed), fmtElapsed(cfg.benchDuration),
 						cur, totalErrs.Load(), rps)
 				} else {
-					line = fmt.Sprintf("\r  [%s]   req: %-7d   err: %-5d   rps: %-6.0f",
+					line = fmt.Sprintf("\r  [%s]   req: %-8d   err: %-6d   rps: %-7.0f",
 						fmtElapsed(elapsed), cur, totalErrs.Load(), rps)
 				}
 				fmt.Fprint(os.Stderr, line)
@@ -81,22 +103,14 @@ func runBench(cfg config, prof profiles.Profile) {
 	}()
 
 	var wg sync.WaitGroup
-	for range cfg.concurrency {
+	for _, conn := range conns {
 		wg.Add(1)
-		go func() {
+		go func(c *sender.Conn) {
 			defer wg.Done()
-			for range work {
-				if ctx.Err() != nil {
-					continue
-				}
+			for ctx.Err() == nil {
 				reqCtx, reqCancel := context.WithTimeout(ctx, cfg.timeout)
 				t0 := time.Now()
-				res, err := sender.Do(reqCtx, cfg.url, sender.Options{
-					Profile:  prof,
-					Method:   cfg.method,
-					Timeout:  cfg.timeout,
-					Insecure: cfg.insecure,
-				})
+				res, err := c.Do(reqCtx)
 				reqCancel()
 				lat := time.Since(t0)
 
@@ -109,14 +123,14 @@ func runBench(cfg config, prof profiles.Profile) {
 					mu.Unlock()
 				}
 			}
-		}()
+		}(conn)
 	}
 
 	wg.Wait()
 	cancel()
 
 	elapsed := time.Since(start)
-	fmt.Fprintln(os.Stderr) // newline after live stats
+	fmt.Fprintln(os.Stderr)
 
 	printBenchSummary(totalReqs.Load(), totalErrs.Load(), elapsed, latencies)
 }

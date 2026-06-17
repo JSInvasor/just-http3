@@ -1,5 +1,8 @@
-// Package sender drives a single HTTP/3 request using a browser fingerprint
-// profile and reports a detailed timing breakdown.
+// Package sender drives HTTP/3 requests using a browser fingerprint profile.
+//
+// For single requests use Do. For high-throughput benchmarks use Dial to
+// create a persistent Conn and call Conn.Do in a loop — the QUIC handshake
+// is performed once and the connection is reused for every subsequent request.
 package sender
 
 import (
@@ -215,6 +218,144 @@ func Do(ctx context.Context, rawURL string, opts Options) (*Result, error) {
 		res.ALPN = resp.TLS.NegotiatedProtocol
 	}
 	return res, nil
+}
+
+// Conn is a persistent HTTP/3 connection with a fixed browser fingerprint.
+// The QUIC handshake happens once (on the first Do call); every subsequent
+// Do reuses the same connection — no DNS lookup, no handshake overhead.
+// Conn.Do is safe to call concurrently from multiple goroutines.
+type Conn struct {
+	rt interface {
+		RoundTrip(*http.Request) (*http.Response, error)
+		Close() error
+	}
+	udpConn *net.UDPConn
+	opts    Options
+	rawURL  string
+	method  string
+}
+
+// Dial creates a Conn ready to send requests to rawURL. The QUIC transport
+// is set up here but the actual handshake is deferred to the first Do call.
+func Dial(rawURL string, opts Options) (*Conn, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid url: %w", err)
+	}
+	if u.Scheme != "https" {
+		return nil, fmt.Errorf("http3 requires https, got %q", u.Scheme)
+	}
+
+	serverName := opts.ServerName
+	if serverName == "" {
+		serverName = u.Hostname()
+	}
+
+	spec, err := opts.Profile.Spec()
+	if err != nil {
+		return nil, fmt.Errorf("loading quic spec: %w", err)
+	}
+
+	tlsConf := &utls.Config{
+		ServerName:         serverName,
+		NextProtos:         opts.Profile.ALPN,
+		InsecureSkipVerify: opts.Insecure,
+	}
+
+	udpConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return nil, fmt.Errorf("opening udp socket: %w", err)
+	}
+
+	uTransport := &quic.UTransport{
+		Transport: &quic.Transport{Conn: udpConn},
+		QUICSpec:  &spec,
+	}
+
+	dialer := func(ctx context.Context, addr string, tlsCfg *utls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
+		udpAddr, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := uTransport.DialEarly(ctx, udpAddr, tlsCfg, cfg)
+		if err != nil {
+			return nil, err
+		}
+		select {
+		case <-conn.HandshakeComplete():
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return conn, nil
+	}
+
+	rt := &http3.RoundTripper{
+		TLSClientConfig: tlsConf,
+		QuicConfig:      &quic.Config{},
+		Dial:            dialer,
+	}
+	uRT := http3.GetURoundTripper(rt, &spec, uTransport)
+
+	method := opts.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+
+	return &Conn{
+		rt:      uRT,
+		udpConn: udpConn,
+		opts:    opts,
+		rawURL:  rawURL,
+		method:  method,
+	}, nil
+}
+
+// Do sends one HTTP/3 request over the persistent connection.
+func (c *Conn) Do(ctx context.Context) (*Result, error) {
+	req, err := http.NewRequestWithContext(ctx, c.method, c.rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	applyHeaders(req, c.opts.Profile.Headers)
+	if c.opts.UserAgent != "" {
+		req.Header.Set("user-agent", c.opts.UserAgent)
+	}
+
+	t0 := time.Now()
+	resp, err := c.rt.RoundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	ttfb := time.Since(t0)
+
+	dlStart := time.Now()
+	n, copyErr := io.Copy(io.Discard, resp.Body)
+	dlDur := time.Since(dlStart)
+	if copyErr != nil {
+		return nil, fmt.Errorf("reading body: %w", copyErr)
+	}
+
+	return &Result{
+		Profile:    c.opts.Profile,
+		URL:        c.rawURL,
+		Status:     resp.Status,
+		StatusCode: resp.StatusCode,
+		Proto:      resp.Proto,
+		BodyBytes:  int(n),
+		Header:     resp.Header,
+		Timings: Timings{
+			TTFB:     ttfb,
+			Download: dlDur,
+			Total:    ttfb + dlDur,
+		},
+	}, nil
+}
+
+// Close shuts down the connection and releases the UDP socket.
+func (c *Conn) Close() {
+	c.rt.Close()
+	c.udpConn.Close()
 }
 
 func applyHeaders(req *http.Request, hs []profiles.Header) {
