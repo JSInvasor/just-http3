@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +50,11 @@ func main() {
 		os.Exit(2)
 	}
 
+	if cfg.concurrency > 0 {
+		runBench(cfg, prof)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
 
@@ -79,6 +85,8 @@ type config struct {
 	verbose     bool
 	showBody    bool
 	maxBody     int64
+	concurrency int
+	numRequests int64
 	showHelp    bool
 	showVersion bool
 }
@@ -136,6 +144,26 @@ func parseArgs(args []string) (config, error) {
 				return cfg, fmt.Errorf("invalid timeout %q: %w", val, err)
 			}
 			cfg.timeout = d
+		case a == "-c" || a == "--concurrency":
+			val, err := next(args, &i, a)
+			if err != nil {
+				return cfg, err
+			}
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 1 {
+				return cfg, fmt.Errorf("invalid concurrency %q: must be >= 1", val)
+			}
+			cfg.concurrency = n
+		case a == "-n" || a == "--requests":
+			val, err := next(args, &i, a)
+			if err != nil {
+				return cfg, err
+			}
+			n, err := strconv.ParseInt(val, 10, 64)
+			if err != nil || n < 0 {
+				return cfg, fmt.Errorf("invalid requests %q: must be >= 0", val)
+			}
+			cfg.numRequests = n
 		case strings.HasPrefix(a, "-"):
 			return cfg, fmt.Errorf("unknown flag %q", a)
 		default:
@@ -267,20 +295,26 @@ USAGE
   http3-beta [flags] <url>
 
 FLAGS
-  -p, --profile <name>   browser profile to impersonate (default: %s)
-                         available: %s
-  -A, --user-agent <ua>  override the profile's User-Agent
-  -X, --method <method>  HTTP method (default: GET)
-  -t, --timeout <dur>    overall timeout, e.g. 10s, 1m (default: 30s)
-  -k, --insecure         skip TLS certificate verification
-  -v, --verbose          print response headers
-  -b, --body             print response body
-      --version          print version
-  -h, --help             show this help
+  -p, --profile <name>      browser profile to impersonate (default: %s)
+                            available: %s
+  -A, --user-agent <ua>     override the profile's User-Agent
+  -X, --method <method>     HTTP method (default: GET)
+  -t, --timeout <dur>       per-request timeout, e.g. 10s, 1m (default: 30s)
+  -k, --insecure            skip TLS certificate verification
+  -v, --verbose             print response headers
+  -b, --body                print response body
+
+  -c, --concurrency <n>     enable benchmark mode: n concurrent workers
+  -n, --requests <n>        total requests to send (0 = unlimited, default: 0)
+
+      --version             print version
+  -h, --help                show this help
 
 EXAMPLES
   http3-beta https://tls.peet.ws/api/all
-  http3-beta -p firefox -v https://cloudflare-quic.com
+  http3-beta -p safari -v https://cloudflare-quic.com
   http3-beta -X HEAD -t 5s https://www.google.com
+  http3-beta -c 50 https://example.com              # 50 concurrent, unlimited
+  http3-beta -c 50 -n 10000 https://example.com     # 50 concurrent, 10k requests
 `, version, profiles.Default, strings.Join(profiles.Names(), ", "))
 }
