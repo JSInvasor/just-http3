@@ -17,21 +17,25 @@ import (
 )
 
 func runBench(cfg config, prof profiles.Profile) {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	sigCtx, sigCancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer sigCancel()
+
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if cfg.benchDuration > 0 {
+		ctx, cancel = context.WithTimeout(sigCtx, cfg.benchDuration)
+	} else {
+		ctx, cancel = context.WithCancel(sigCtx)
+	}
 	defer cancel()
 
-	// work channel feeds goroutines; feeder closes it when done or ctx cancelled.
+	// Feeder sends work until context is cancelled, then closes the channel.
 	work := make(chan struct{}, cfg.concurrency)
 	go func() {
 		defer close(work)
-		var sent int64
 		for {
-			if cfg.numRequests > 0 && sent >= cfg.numRequests {
-				return
-			}
 			select {
 			case work <- struct{}{}:
-				sent++
 			case <-ctx.Done():
 				return
 			}
@@ -47,7 +51,7 @@ func runBench(cfg config, prof profiles.Profile) {
 
 	start := time.Now()
 
-	// Live stats line updated every second.
+	// Live stats line, rewritten in place every second.
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
@@ -58,11 +62,20 @@ func runBench(cfg config, prof profiles.Profile) {
 				return
 			case <-ticker.C:
 				cur := totalReqs.Load()
-				elapsed := time.Since(start).Seconds()
-				fmt.Fprintf(os.Stderr,
-					"\r  req: %-8d  err: %-6d  rps(now): %-8.0f  rps(avg): %-8.1f",
-					cur, totalErrs.Load(), float64(cur-prev), float64(cur)/elapsed)
+				elapsed := time.Since(start)
+				rps := float64(cur-prev)
 				prev = cur
+
+				var line string
+				if cfg.benchDuration > 0 {
+					line = fmt.Sprintf("\r  [%s / %s]   req: %-7d   err: %-5d   rps: %-6.0f",
+						fmtElapsed(elapsed), fmtElapsed(cfg.benchDuration),
+						cur, totalErrs.Load(), rps)
+				} else {
+					line = fmt.Sprintf("\r  [%s]   req: %-7d   err: %-5d   rps: %-6.0f",
+						fmtElapsed(elapsed), cur, totalErrs.Load(), rps)
+				}
+				fmt.Fprint(os.Stderr, line)
 			}
 		}
 	}()
@@ -103,7 +116,7 @@ func runBench(cfg config, prof profiles.Profile) {
 	cancel()
 
 	elapsed := time.Since(start)
-	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr) // newline after live stats
 
 	printBenchSummary(totalReqs.Load(), totalErrs.Load(), elapsed, latencies)
 }
@@ -112,14 +125,19 @@ func printBenchSummary(total, errs int64, elapsed time.Duration, latencies []tim
 	tty := isTTY()
 	bold := paint(tty, "1")
 	dim := paint(tty, "2")
+	errPaint := paint(tty, "31")
 
 	rps := float64(total) / elapsed.Seconds()
 
-	fmt.Printf("\n%s\n", bold("── Benchmark ──────────────────────────────────────"))
-	fmt.Printf("  %-16s %d\n", "requests", total)
-	fmt.Printf("  %-16s %d\n", "errors", errs)
-	fmt.Printf("  %-16s %.2fs\n", "duration", elapsed.Seconds())
-	fmt.Printf("  %-16s %.1f req/s\n", "RPS", rps)
+	fmt.Printf("\n%s\n", bold("── Result ─────────────────────────────────────────"))
+	fmt.Printf("  %-12s %d\n", "requests", total)
+	if errs > 0 {
+		fmt.Printf("  %-12s %s\n", "errors", errPaint(fmt.Sprintf("%d", errs)))
+	} else {
+		fmt.Printf("  %-12s %d\n", "errors", errs)
+	}
+	fmt.Printf("  %-12s %s\n", "duration", elapsed.Round(time.Millisecond))
+	fmt.Printf("  %-12s %.1f req/s\n", "RPS", rps)
 
 	if len(latencies) == 0 {
 		fmt.Println()
@@ -139,12 +157,12 @@ func printBenchSummary(total, errs int64, elapsed time.Duration, latencies []tim
 		return latencies[idx]
 	}
 
-	fmt.Printf("\n  %s\n", dim("latency (total round-trip incl. handshake)"))
-	fmt.Printf("  %-16s %s\n", "min", fmtDur(latencies[0]))
-	fmt.Printf("  %-16s %s\n", "p50", fmtDur(pct(50)))
-	fmt.Printf("  %-16s %s\n", "p90", fmtDur(pct(90)))
-	fmt.Printf("  %-16s %s\n", "p95", fmtDur(pct(95)))
-	fmt.Printf("  %-16s %s\n", "p99", fmtDur(pct(99)))
-	fmt.Printf("  %-16s %s\n", "max", fmtDur(latencies[len(latencies)-1]))
+	fmt.Printf("\n  %s\n", dim("latency"))
+	fmt.Printf("  %-12s %s\n", "min", fmtDur(latencies[0]))
+	fmt.Printf("  %-12s %s\n", "p50", fmtDur(pct(50)))
+	fmt.Printf("  %-12s %s\n", "p90", fmtDur(pct(90)))
+	fmt.Printf("  %-12s %s\n", "p95", fmtDur(pct(95)))
+	fmt.Printf("  %-12s %s\n", "p99", fmtDur(pct(99)))
+	fmt.Printf("  %-12s %s\n", "max", fmtDur(latencies[len(latencies)-1]))
 	fmt.Println()
 }

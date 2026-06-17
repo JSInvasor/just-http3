@@ -1,14 +1,13 @@
-// Command http3-beta sends a single HTTP/3 request while impersonating a real
-// browser's QUIC + TLS fingerprint, then prints a timing breakdown.
+// Command http3-beta sends HTTP/3 requests while impersonating a real
+// browser's QUIC + TLS fingerprint.
 //
-// Usage:
+// Single request:
 //
-//	http3-beta [flags] https://example.com
+//	http3-beta https://example.com
 //
-// Example:
+// Benchmark mode:
 //
-//	http3-beta https://tls.peet.ws/api/all
-//	http3-beta -profile firefox -v https://cloudflare-quic.com
+//	http3-beta https://example.com 30s 50
 package main
 
 import (
@@ -76,19 +75,19 @@ func main() {
 }
 
 type config struct {
-	url         string
-	profile     string
-	method      string
-	userAgent   string
-	timeout     time.Duration
-	insecure    bool
-	verbose     bool
-	showBody    bool
-	maxBody     int64
-	concurrency int
-	numRequests int64
-	showHelp    bool
-	showVersion bool
+	url          string
+	profile      string
+	method       string
+	userAgent    string
+	timeout      time.Duration
+	insecure     bool
+	verbose      bool
+	showBody     bool
+	maxBody      int64
+	concurrency  int
+	benchDuration time.Duration
+	showHelp     bool
+	showVersion  bool
 }
 
 func parseArgs(args []string) (config, error) {
@@ -144,26 +143,6 @@ func parseArgs(args []string) (config, error) {
 				return cfg, fmt.Errorf("invalid timeout %q: %w", val, err)
 			}
 			cfg.timeout = d
-		case a == "-c" || a == "--concurrency":
-			val, err := next(args, &i, a)
-			if err != nil {
-				return cfg, err
-			}
-			n, err := strconv.Atoi(val)
-			if err != nil || n < 1 {
-				return cfg, fmt.Errorf("invalid concurrency %q: must be >= 1", val)
-			}
-			cfg.concurrency = n
-		case a == "-n" || a == "--requests":
-			val, err := next(args, &i, a)
-			if err != nil {
-				return cfg, err
-			}
-			n, err := strconv.ParseInt(val, 10, 64)
-			if err != nil || n < 0 {
-				return cfg, fmt.Errorf("invalid requests %q: must be >= 0", val)
-			}
-			cfg.numRequests = n
 		case strings.HasPrefix(a, "-"):
 			return cfg, fmt.Errorf("unknown flag %q", a)
 		default:
@@ -177,13 +156,29 @@ func parseArgs(args []string) (config, error) {
 	if len(positional) == 0 {
 		return cfg, fmt.Errorf("missing URL")
 	}
-	if len(positional) > 1 {
-		return cfg, fmt.Errorf("only one URL allowed, got %d", len(positional))
+	if len(positional) != 1 && len(positional) != 3 {
+		return cfg, fmt.Errorf("usage: http3-beta <url>  or  http3-beta <url> <duration> <threads>")
 	}
+
 	cfg.url = positional[0]
 	if !strings.Contains(cfg.url, "://") {
 		cfg.url = "https://" + cfg.url
 	}
+
+	if len(positional) == 3 {
+		dur, err := time.ParseDuration(positional[1])
+		if err != nil || dur < 0 {
+			return cfg, fmt.Errorf("invalid duration %q — use e.g. 30s, 1m, 2m30s, 0 for unlimited", positional[1])
+		}
+		cfg.benchDuration = dur
+
+		n, err := strconv.Atoi(positional[2])
+		if err != nil || n < 1 {
+			return cfg, fmt.Errorf("invalid thread count %q — must be >= 1", positional[2])
+		}
+		cfg.concurrency = n
+	}
+
 	return cfg, nil
 }
 
@@ -251,8 +246,6 @@ func printResult(res *sender.Result, cfg config) {
 	}
 }
 
-// paint returns a function that wraps text in the given ANSI SGR code when
-// the output is a terminal, and leaves it untouched otherwise.
 func paint(tty bool, code string) func(string) string {
 	return func(s string) string {
 		if !tty {
@@ -275,6 +268,14 @@ func fmtDur(d time.Duration) string {
 	return fmt.Sprintf("%8.2f ms", ms)
 }
 
+func fmtElapsed(d time.Duration) string {
+	s := int(d.Seconds())
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	return fmt.Sprintf("%dm%ds", s/60, s%60)
+}
+
 func fmtBytes(n int) string {
 	switch {
 	case n <= 0:
@@ -289,32 +290,31 @@ func fmtBytes(n int) string {
 }
 
 func usage(w *os.File) {
-	fmt.Fprintf(w, `http3-beta %s — custom HTTP/3 request sender with browser fingerprint impersonation
+	fmt.Fprintf(w, `http3-beta %s — HTTP/3 request sender with browser fingerprint impersonation
 
 USAGE
-  http3-beta [flags] <url>
+  http3-beta [flags] <url>                        single request
+  http3-beta [flags] <url> <duration> <threads>   benchmark mode
+
+  duration: how long to run (30s, 1m, 2m30s). Use 0 for unlimited (Ctrl+C to stop).
+  threads:  number of concurrent workers.
 
 FLAGS
-  -p, --profile <name>      browser profile to impersonate (default: %s)
-                            available: %s
-  -A, --user-agent <ua>     override the profile's User-Agent
-  -X, --method <method>     HTTP method (default: GET)
-  -t, --timeout <dur>       per-request timeout, e.g. 10s, 1m (default: 30s)
-  -k, --insecure            skip TLS certificate verification
-  -v, --verbose             print response headers
-  -b, --body                print response body
-
-  -c, --concurrency <n>     enable benchmark mode: n concurrent workers
-  -n, --requests <n>        total requests to send (0 = unlimited, default: 0)
-
-      --version             print version
-  -h, --help                show this help
+  -p, --profile <name>   browser profile (default: %s, available: %s)
+  -A, --user-agent <ua>  override User-Agent
+  -X, --method <method>  HTTP method (default: GET)
+  -t, --timeout <dur>    per-request timeout (default: 30s)
+  -k, --insecure         skip TLS certificate verification
+  -v, --verbose          print response headers
+  -b, --body             print response body
+      --version          print version
+  -h, --help             show this help
 
 EXAMPLES
-  http3-beta https://tls.peet.ws/api/all
-  http3-beta -p safari -v https://cloudflare-quic.com
-  http3-beta -X HEAD -t 5s https://www.google.com
-  http3-beta -c 50 https://example.com              # 50 concurrent, unlimited
-  http3-beta -c 50 -n 10000 https://example.com     # 50 concurrent, 10k requests
+  http3-beta https://example.com                        # single request
+  http3-beta https://example.com 30s 50                 # 30 seconds, 50 threads
+  http3-beta https://example.com 0 100                  # unlimited, 100 threads
+  http3-beta -p safari https://example.com 1m 20        # macOS Safari profile
+  http3-beta -k https://example.com 10s 10              # skip TLS verify
 `, version, profiles.Default, strings.Join(profiles.Names(), ", "))
 }
