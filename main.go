@@ -179,8 +179,8 @@ func parseArgs(args []string) (config, error) {
 	if len(positional) == 0 {
 		return cfg, fmt.Errorf("missing URL")
 	}
-	if len(positional) != 1 && len(positional) != 3 {
-		return cfg, fmt.Errorf("usage: http3-beta <url>  or  http3-beta <url> <duration> <threads>")
+	if len(positional) != 1 && len(positional) != 3 && len(positional) != 4 {
+		return cfg, fmt.Errorf("usage: http3-beta <url>  or  http3-beta <url> <duration> <threads> [proxies]")
 	}
 
 	cfg.url = positional[0]
@@ -188,7 +188,7 @@ func parseArgs(args []string) (config, error) {
 		cfg.url = "https://" + cfg.url
 	}
 
-	if len(positional) == 3 {
+	if len(positional) >= 3 {
 		dur, err := time.ParseDuration(positional[1])
 		if err != nil || dur < 0 {
 			return cfg, fmt.Errorf("invalid duration %q — use e.g. 30s, 1m, 2m30s, 0 for unlimited", positional[1])
@@ -200,6 +200,14 @@ func parseArgs(args []string) (config, error) {
 			return cfg, fmt.Errorf("invalid thread count %q — must be >= 1", positional[2])
 		}
 		cfg.concurrency = n
+	}
+
+	if len(positional) == 4 && len(cfg.proxies) == 0 {
+		proxies, err := parseProxies(positional[3])
+		if err != nil {
+			return cfg, err
+		}
+		cfg.proxies = proxies
 	}
 
 	return cfg, nil
@@ -359,11 +367,13 @@ func usage(w *os.File) {
 	fmt.Fprintf(w, `http3-beta %s — HTTP/3 request sender with browser fingerprint impersonation
 
 USAGE
-  http3-beta [flags] <url>                        single request
-  http3-beta [flags] <url> <duration> <threads>   benchmark mode
+  http3-beta [flags] <url>                                 single request
+  http3-beta [flags] <url> <duration> <threads>            benchmark, direct
+  http3-beta [flags] <url> <duration> <threads> <proxies>  benchmark, with proxies
 
   duration: how long to run (30s, 1m, 2m30s). Use 0 for unlimited (Ctrl+C to stop).
   threads:  number of concurrent workers.
+  proxies:  proxies.txt file (one socks5:// per line) or a single socks5:// URL.
 
 FLAGS
   -p, --profile <name>   browser profile (default: %s, available: %s)
@@ -373,16 +383,14 @@ FLAGS
   -k, --insecure         skip TLS certificate verification
   -v, --verbose          print response headers
   -b, --body             print response body
-  -x, --proxy <val>      SOCKS5 proxy — either:
-                           socks5://[user:pass@]host:port  (single proxy)
-                           proxies.txt                     (file, one proxy per line)
+  -x, --proxy <val>      proxy for single-request mode (socks5:// or file)
       --version          print version
   -h, --help             show this help
 
 EXAMPLES
   http3-beta https://example.com
   http3-beta https://example.com 30s 50
-  http3-beta -x socks5://user:pass@1.2.3.4:1080 https://example.com
-  http3-beta -x proxies.txt https://example.com 30s 100
+  http3-beta https://example.com 30s 100 proxies.txt
+  http3-beta https://example.com 0 200 proxies.txt
 `, version, profiles.Default, strings.Join(profiles.Names(), ", "))
 }
