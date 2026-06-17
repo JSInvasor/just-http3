@@ -15,22 +15,22 @@ func TestParseArgs(t *testing.T) {
 		{
 			name: "url only gets defaults",
 			args: []string{"https://example.com"},
-			want: config{url: "https://example.com", profile: "chrome", method: "GET", timeout: 30 * time.Second},
+			want: config{url: "https://example.com", profile: "ios", method: "GET", timeout: 30 * time.Second},
 		},
 		{
 			name: "scheme is added when missing",
 			args: []string{"example.com"},
-			want: config{url: "https://example.com", profile: "chrome", method: "GET", timeout: 30 * time.Second},
+			want: config{url: "https://example.com", profile: "ios", method: "GET", timeout: 30 * time.Second},
 		},
 		{
 			name: "flags before url",
-			args: []string{"-p", "firefox", "-X", "head", "-t", "5s", "-v", "https://x.io"},
-			want: config{url: "https://x.io", profile: "firefox", method: "HEAD", timeout: 5 * time.Second, verbose: true},
+			args: []string{"-p", "safari", "-X", "head", "-t", "5s", "-v", "https://x.io"},
+			want: config{url: "https://x.io", profile: "safari", method: "HEAD", timeout: 5 * time.Second, verbose: true},
 		},
 		{
 			name: "profile equals form",
-			args: []string{"--profile=firefox", "https://x.io"},
-			want: config{url: "https://x.io", profile: "firefox", method: "GET", timeout: 30 * time.Second},
+			args: []string{"--profile=safari", "https://x.io"},
+			want: config{url: "https://x.io", profile: "safari", method: "GET", timeout: 30 * time.Second},
 		},
 		{name: "missing url", args: []string{"-v"}, wantErr: true},
 		{name: "unknown flag", args: []string{"--nope", "https://x.io"}, wantErr: true},
