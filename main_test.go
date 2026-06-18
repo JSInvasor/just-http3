@@ -15,12 +15,12 @@ func TestParseArgs(t *testing.T) {
 		{
 			name: "url only gets defaults",
 			args: []string{"https://example.com"},
-			want: config{url: "https://example.com", profile: "ios", method: "GET", timeout: 30 * time.Second},
+			want: config{url: "https://example.com", profile: "ios26", method: "GET", timeout: 30 * time.Second},
 		},
 		{
 			name: "scheme is added when missing",
 			args: []string{"example.com"},
-			want: config{url: "https://example.com", profile: "ios", method: "GET", timeout: 30 * time.Second},
+			want: config{url: "https://example.com", profile: "ios26", method: "GET", timeout: 30 * time.Second},
 		},
 		{
 			name: "flags before url",
@@ -35,12 +35,12 @@ func TestParseArgs(t *testing.T) {
 		{
 			name: "bench mode positional",
 			args: []string{"https://x.io", "30s", "50"},
-			want: config{url: "https://x.io", profile: "ios", method: "GET", timeout: 30 * time.Second, benchDuration: 30 * time.Second, concurrency: 50},
+			want: config{url: "https://x.io", profile: "ios26", method: "GET", timeout: 30 * time.Second, benchDuration: 30 * time.Second, concurrency: 50},
 		},
 		{
 			name: "bench mode unlimited duration",
 			args: []string{"https://x.io", "0", "10"},
-			want: config{url: "https://x.io", profile: "ios", method: "GET", timeout: 30 * time.Second, benchDuration: 0, concurrency: 10},
+			want: config{url: "https://x.io", profile: "ios26", method: "GET", timeout: 30 * time.Second, benchDuration: 0, concurrency: 10},
 		},
 		{
 			name: "bench mode with profile flag",
