@@ -1,21 +1,23 @@
-// Command http3-beta sends a single HTTP/3 request while impersonating a real
-// browser's QUIC + TLS fingerprint, then prints a timing breakdown.
+// Command http3-beta sends HTTP/3 requests while impersonating a real
+// browser's QUIC + TLS fingerprint.
 //
-// Usage:
+// Single request:
 //
-//	http3-beta [flags] https://example.com
+//	http3-beta https://example.com
 //
-// Example:
+// Benchmark mode:
 //
-//	http3-beta https://tls.peet.ws/api/all
-//	http3-beta -profile firefox -v https://cloudflare-quic.com
+//	http3-beta https://example.com 30s 50
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +51,11 @@ func main() {
 		os.Exit(2)
 	}
 
+	if cfg.concurrency > 0 {
+		runBench(cfg, prof)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
 	defer cancel()
 
@@ -60,6 +67,7 @@ func main() {
 		UserAgent: cfg.userAgent,
 		KeepBody:  cfg.showBody,
 		MaxBody:   cfg.maxBody,
+		ProxyURL:  cfg.proxyFor(0),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "request failed:", err)
@@ -70,17 +78,29 @@ func main() {
 }
 
 type config struct {
-	url         string
-	profile     string
-	method      string
-	userAgent   string
-	timeout     time.Duration
-	insecure    bool
-	verbose     bool
-	showBody    bool
-	maxBody     int64
-	showHelp    bool
-	showVersion bool
+	url           string
+	profile       string
+	method        string
+	userAgent     string
+	timeout       time.Duration
+	insecure      bool
+	verbose       bool
+	showBody      bool
+	maxBody       int64
+	concurrency   int
+	benchDuration time.Duration
+	proxies       []*url.URL
+	showHelp      bool
+	showVersion   bool
+}
+
+// proxyFor returns the proxy to use for connection slot i (round-robin).
+// Returns nil if no proxies are configured (direct connection).
+func (c *config) proxyFor(i int) *url.URL {
+	if len(c.proxies) == 0 {
+		return nil
+	}
+	return c.proxies[i%len(c.proxies)]
 }
 
 func parseArgs(args []string) (config, error) {
@@ -136,6 +156,16 @@ func parseArgs(args []string) (config, error) {
 				return cfg, fmt.Errorf("invalid timeout %q: %w", val, err)
 			}
 			cfg.timeout = d
+		case a == "-x" || a == "--proxy":
+			val, err := next(args, &i, a)
+			if err != nil {
+				return cfg, err
+			}
+			proxies, err := parseProxies(val)
+			if err != nil {
+				return cfg, err
+			}
+			cfg.proxies = proxies
 		case strings.HasPrefix(a, "-"):
 			return cfg, fmt.Errorf("unknown flag %q", a)
 		default:
@@ -149,14 +179,78 @@ func parseArgs(args []string) (config, error) {
 	if len(positional) == 0 {
 		return cfg, fmt.Errorf("missing URL")
 	}
-	if len(positional) > 1 {
-		return cfg, fmt.Errorf("only one URL allowed, got %d", len(positional))
+	if len(positional) != 1 && len(positional) != 3 && len(positional) != 4 {
+		return cfg, fmt.Errorf("usage: http3-beta <url>  or  http3-beta <url> <duration> <threads> [proxies]")
 	}
+
 	cfg.url = positional[0]
 	if !strings.Contains(cfg.url, "://") {
 		cfg.url = "https://" + cfg.url
 	}
+
+	if len(positional) >= 3 {
+		dur, err := time.ParseDuration(positional[1])
+		if err != nil || dur < 0 {
+			return cfg, fmt.Errorf("invalid duration %q — use e.g. 30s, 1m, 2m30s, 0 for unlimited", positional[1])
+		}
+		cfg.benchDuration = dur
+
+		n, err := strconv.Atoi(positional[2])
+		if err != nil || n < 1 {
+			return cfg, fmt.Errorf("invalid thread count %q — must be >= 1", positional[2])
+		}
+		cfg.concurrency = n
+	}
+
+	if len(positional) == 4 && len(cfg.proxies) == 0 {
+		proxies, err := parseProxies(positional[3])
+		if err != nil {
+			return cfg, err
+		}
+		cfg.proxies = proxies
+	}
+
 	return cfg, nil
+}
+
+// parseProxies accepts either a single socks5:// URL or a path to a .txt file
+// containing one socks5:// URL per line (blank lines and # comments ignored).
+func parseProxies(val string) ([]*url.URL, error) {
+	if strings.Contains(val, "://") {
+		u, err := url.Parse(val)
+		if err != nil || u.Scheme != "socks5" {
+			return nil, fmt.Errorf("invalid proxy %q: must be socks5://[user:pass@]host:port", val)
+		}
+		return []*url.URL{u}, nil
+	}
+
+	// Treat as file path.
+	f, err := os.Open(val)
+	if err != nil {
+		return nil, fmt.Errorf("open proxy file %q: %w", val, err)
+	}
+	defer f.Close()
+
+	var out []*url.URL
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		u, err := url.Parse(line)
+		if err != nil || u.Scheme != "socks5" {
+			return nil, fmt.Errorf("proxy file %q: invalid line %q: must be socks5://[user:pass@]host:port", val, line)
+		}
+		out = append(out, u)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read proxy file %q: %w", val, err)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("proxy file %q is empty", val)
+	}
+	return out, nil
 }
 
 func next(args []string, i *int, flag string) (string, error) {
@@ -185,6 +279,9 @@ func printResult(res *sender.Result, cfg config) {
 	if res.TLSVersion != 0 {
 		fmt.Printf("  %s  %s / %s\n", dim("tls     "),
 			sender.TLSVersionName(res.TLSVersion), sender.CipherName(res.CipherID))
+	}
+	if p := cfg.proxyFor(0); p != nil {
+		fmt.Printf("  %s  %s\n", dim("proxy   "), p.Host)
 	}
 	fmt.Println()
 
@@ -223,8 +320,6 @@ func printResult(res *sender.Result, cfg config) {
 	}
 }
 
-// paint returns a function that wraps text in the given ANSI SGR code when
-// the output is a terminal, and leaves it untouched otherwise.
 func paint(tty bool, code string) func(string) string {
 	return func(s string) string {
 		if !tty {
@@ -247,6 +342,14 @@ func fmtDur(d time.Duration) string {
 	return fmt.Sprintf("%8.2f ms", ms)
 }
 
+func fmtElapsed(d time.Duration) string {
+	s := int(d.Seconds())
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	return fmt.Sprintf("%dm%ds", s/60, s%60)
+}
+
 func fmtBytes(n int) string {
 	switch {
 	case n <= 0:
@@ -261,26 +364,33 @@ func fmtBytes(n int) string {
 }
 
 func usage(w *os.File) {
-	fmt.Fprintf(w, `http3-beta %s — custom HTTP/3 request sender with browser fingerprint impersonation
+	fmt.Fprintf(w, `http3-beta %s — HTTP/3 request sender with browser fingerprint impersonation
 
 USAGE
-  http3-beta [flags] <url>
+  http3-beta [flags] <url>                                 single request
+  http3-beta [flags] <url> <duration> <threads>            benchmark, direct
+  http3-beta [flags] <url> <duration> <threads> <proxies>  benchmark, with proxies
+
+  duration: how long to run (30s, 1m, 2m30s). Use 0 for unlimited (Ctrl+C to stop).
+  threads:  number of concurrent workers.
+  proxies:  proxies.txt file (one socks5:// per line) or a single socks5:// URL.
 
 FLAGS
-  -p, --profile <name>   browser profile to impersonate (default: %s)
-                         available: %s
-  -A, --user-agent <ua>  override the profile's User-Agent
+  -p, --profile <name>   browser profile (default: %s, available: %s)
+  -A, --user-agent <ua>  override User-Agent
   -X, --method <method>  HTTP method (default: GET)
-  -t, --timeout <dur>    overall timeout, e.g. 10s, 1m (default: 30s)
+  -t, --timeout <dur>    per-request timeout (default: 30s)
   -k, --insecure         skip TLS certificate verification
   -v, --verbose          print response headers
   -b, --body             print response body
+  -x, --proxy <val>      proxy for single-request mode (socks5:// or file)
       --version          print version
   -h, --help             show this help
 
 EXAMPLES
-  http3-beta https://tls.peet.ws/api/all
-  http3-beta -p firefox -v https://cloudflare-quic.com
-  http3-beta -X HEAD -t 5s https://www.google.com
+  http3-beta https://example.com
+  http3-beta https://example.com 30s 50
+  http3-beta https://example.com 30s 100 proxies.txt
+  http3-beta https://example.com 0 200 proxies.txt
 `, version, profiles.Default, strings.Join(profiles.Names(), ", "))
 }

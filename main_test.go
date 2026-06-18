@@ -15,12 +15,12 @@ func TestParseArgs(t *testing.T) {
 		{
 			name: "url only gets defaults",
 			args: []string{"https://example.com"},
-			want: config{url: "https://example.com", profile: "ios", method: "GET", timeout: 30 * time.Second},
+			want: config{url: "https://example.com", profile: "ios26", method: "GET", timeout: 30 * time.Second},
 		},
 		{
 			name: "scheme is added when missing",
 			args: []string{"example.com"},
-			want: config{url: "https://example.com", profile: "ios", method: "GET", timeout: 30 * time.Second},
+			want: config{url: "https://example.com", profile: "ios26", method: "GET", timeout: 30 * time.Second},
 		},
 		{
 			name: "flags before url",
@@ -32,10 +32,27 @@ func TestParseArgs(t *testing.T) {
 			args: []string{"--profile=safari", "https://x.io"},
 			want: config{url: "https://x.io", profile: "safari", method: "GET", timeout: 30 * time.Second},
 		},
+		{
+			name: "bench mode positional",
+			args: []string{"https://x.io", "30s", "50"},
+			want: config{url: "https://x.io", profile: "ios26", method: "GET", timeout: 30 * time.Second, benchDuration: 30 * time.Second, concurrency: 50},
+		},
+		{
+			name: "bench mode unlimited duration",
+			args: []string{"https://x.io", "0", "10"},
+			want: config{url: "https://x.io", profile: "ios26", method: "GET", timeout: 30 * time.Second, benchDuration: 0, concurrency: 10},
+		},
+		{
+			name: "bench mode with profile flag",
+			args: []string{"-p", "safari", "https://x.io", "1m", "20"},
+			want: config{url: "https://x.io", profile: "safari", method: "GET", timeout: 30 * time.Second, benchDuration: 60 * time.Second, concurrency: 20},
+		},
 		{name: "missing url", args: []string{"-v"}, wantErr: true},
 		{name: "unknown flag", args: []string{"--nope", "https://x.io"}, wantErr: true},
-		{name: "two urls", args: []string{"https://a.io", "https://b.io"}, wantErr: true},
+		{name: "two positional without third", args: []string{"https://a.io", "30s"}, wantErr: true},
 		{name: "bad timeout", args: []string{"-t", "nope", "https://x.io"}, wantErr: true},
+		{name: "bad bench duration", args: []string{"https://x.io", "nope", "10"}, wantErr: true},
+		{name: "bad thread count", args: []string{"https://x.io", "30s", "0"}, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -52,7 +69,9 @@ func TestParseArgs(t *testing.T) {
 			}
 			if got.url != tt.want.url || got.profile != tt.want.profile ||
 				got.method != tt.want.method || got.timeout != tt.want.timeout ||
-				got.verbose != tt.want.verbose {
+				got.verbose != tt.want.verbose ||
+				got.concurrency != tt.want.concurrency ||
+				got.benchDuration != tt.want.benchDuration {
 				t.Errorf("parseArgs(%v) = %+v, want %+v", tt.args, got, tt.want)
 			}
 		})
