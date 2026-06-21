@@ -239,7 +239,6 @@ var safariQUICSpec26 = quic.QUICSpec{
 			&tls.KeyShareExtension{
 				KeyShares: []tls.KeyShare{
 					{Group: tls.CurveID(tls.GREASE_PLACEHOLDER), Data: []byte{0}},
-					{Group: x25519MLKEM768}, // new: post-quantum hybrid key share
 					{Group: tls.CurveX25519},
 				},
 			},
